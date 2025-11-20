@@ -363,6 +363,7 @@ def evaluate_tier2_stat_bet(
     min_minutes_for_fit: float = 10.0,
     min_games_for_fit: int = 12,
     direction: Literal["over", "under"] = "over",
+    opponent_factor: float = 1.0,
 ) -> Dict[str, Any]:
     """
     Full pipeline for one stat:
@@ -370,10 +371,16 @@ def evaluate_tier2_stat_bet(
       - Pull multi-season data
       - Build minutes-aware, recency-weighted Normal model
       - Predict mean & sigma at expected_minutes
+      - Optionally apply a rough opponent adjustment on the mean:
+            mu_adj = opponent_factor * mu
       - Compute P(stat > line) or P(stat < line)
       - Compute edge vs book and EV per unit
 
-    Returns a dict with model details and betting analytics.
+    opponent_factor:
+        Rough multiplier on the mean (μ) to reflect matchup (pace/defense).
+        Example:
+            1.05 -> +5% expected production (fast pace / weak defense)
+            0.95 -> -5% expected production (slow pace / strong defense)
     """
     stat_col = STAT_MAP[stat_type.lower()]  # map to DF column
 
@@ -396,12 +403,15 @@ def evaluate_tier2_stat_bet(
 
     # Predict distribution at expected_minutes
     dist = predict_stat_distribution(expected_minutes, model_params)
-    mu, sigma = dist["mu"], dist["sigma"]
+    mu_raw, sigma = dist["mu"], dist["sigma"]
 
-    # Probability of winning the bet (over/under)
+    # Apply opponent adjustment to mean only (rough hack)
+    mu_adj = mu_raw * float(opponent_factor)
+
+    # Probability of winning the bet (over/under) with adjusted mean
     p_model = normal_tail_prob(
         line=line,
-        mu=mu,
+        mu=mu_adj,
         sigma=sigma,
         direction=direction,
         continuity=True,
@@ -425,9 +435,11 @@ def evaluate_tier2_stat_bet(
         "direction": direction,
         "odds": odds,
         "expected_minutes": expected_minutes,
+        "opponent_factor": opponent_factor,
         "model_params": model_params,
         "distribution": {
-            "mu": mu,
+            "mu_raw": mu_raw,
+            "mu_adjusted": mu_adj,
             "sigma": sigma,
         },
         "probabilities": {
