@@ -1,0 +1,125 @@
+[info] 2025-12-13T10:41:51-07:00 starting ingest for seasons: 2025-26,2026-27
+[info] processing season 2025-26
+[ok] wrote data/raw_nba/rosters_2025-26.parquet (rows=525)
+Traceback (most recent call last):
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 195, in <module>
+    main()
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 181, in main
+    logs_df = fetch_logs_for_season(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 148, in fetch_logs_for_season
+    safe_sleep(sleep)
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 43, in safe_sleep
+    time.sleep(s)
+KeyboardInterrupt
+[info] 2025-12-13T10:42:54-07:00 starting ingest for seasons: 2025-26,2026-27
+[info] processing season 2025-26
+[ok] wrote data/raw_nba/rosters_2025-26.parquet (rows=525)
+Traceback (most recent call last):
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 195, in <module>
+    main()
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 181, in main
+    logs_df = fetch_logs_for_season(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 139, in fetch_logs_for_season
+    gl = fn()
+         ^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/tenacity/__init__.py", line 338, in wrapped_f
+    return copy(f, *args, **kw)
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/tenacity/__init__.py", line 477, in __call__
+    do = self.iter(retry_state=retry_state)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/tenacity/__init__.py", line 378, in iter
+    result = action(retry_state)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/tenacity/__init__.py", line 400, in <lambda>
+    self._add_action_func(lambda rs: rs.outcome.result())
+                                     ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 449, in result
+    return self.__get_result()
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/concurrent/futures/_base.py", line 401, in __get_result
+    raise self._exception
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/tenacity/__init__.py", line 480, in __call__
+    result = fn(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 137, in <lambda>
+    lambda: fetch_player_logs(pid, season, season_type, timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 71, in fetch_player_logs
+    return playergamelog.PlayerGameLog(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/nba_api/stats/endpoints/playergamelog.py", line 72, in __init__
+    self.get_request()
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/nba_api/stats/endpoints/playergamelog.py", line 75, in get_request
+    self.nba_response = NBAStatsHTTP().send_api_request(
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/nba_api/library/http.py", line 160, in send_api_request
+    response = self.get_session().get(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/requests/sessions.py", line 602, in get
+    return self.request("GET", url, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/requests/sessions.py", line 589, in request
+    resp = self.send(prep, **send_kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/requests/sessions.py", line 703, in send
+    r = adapter.send(request, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/requests/adapters.py", line 644, in send
+    resp = conn.urlopen(
+           ^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/urllib3/connectionpool.py", line 787, in urlopen
+    response = self._make_request(
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/urllib3/connectionpool.py", line 534, in _make_request
+    response = conn.getresponse()
+               ^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_project/lib/python3.12/site-packages/urllib3/connection.py", line 571, in getresponse
+    httplib_response = super().getresponse()
+                       ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/http/client.py", line 1428, in getresponse
+    response.begin()
+  File "/usr/lib/python3.12/http/client.py", line 350, in begin
+    self.headers = self.msg = parse_headers(self.fp)
+                              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/http/client.py", line 249, in parse_headers
+    return _parse_header_lines(headers, _class)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/http/client.py", line 243, in _parse_header_lines
+    return email.parser.Parser(_class=_class).parsestr(hstring)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/email/parser.py", line 64, in parsestr
+    return self.parse(StringIO(text), headersonly=headersonly)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/email/parser.py", line 53, in parse
+    feedparser.feed(data)
+  File "/usr/lib/python3.12/email/feedparser.py", line 174, in feed
+    self._call_parse()
+  File "/usr/lib/python3.12/email/feedparser.py", line 178, in _call_parse
+    self._parse()
+  File "/usr/lib/python3.12/email/feedparser.py", line 226, in _parsegen
+    if not headerRE.match(line):
+           ^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+[info] 2025-12-13T10:43:08-07:00 starting ingest for seasons: 2025-26,2026-27
+[info] processing season 2025-26
+[ok] wrote data/raw_nba/rosters_2025-26.parquet (rows=525)
+[ok] wrote data/raw_nba/game_logs_2025-26.parquet with 8104 rows
+[info] processing season 2026-27
+[ok] wrote data/raw_nba/rosters_2026-27.parquet (rows=0)
+Traceback (most recent call last):
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 195, in <module>
+    main()
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 181, in main
+    logs_df = fetch_logs_for_season(
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/banana-bread/nba_stats_prediction/scripts/01_ingest_nba_game_logs.py", line 151, in fetch_logs_for_season
+    raise RuntimeError(f"No game logs fetched for season {season}")
+RuntimeError: No game logs fetched for season 2026-27
+[info] 2025-12-13T13:18:52-07:00 starting ingest for seasons: 2025-26
+[info] processing season 2025-26
+[ok] wrote data/raw_nba/rosters_2025-26.parquet (rows=525)
+[ok] wrote data/raw_nba/game_logs_2025-26.parquet with 8104 rows
+[done] 2025-12-13T13:23:02-07:00 ingest complete

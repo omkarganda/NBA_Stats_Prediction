@@ -7,11 +7,13 @@ Streamlit app plus helper modules for researching NBA prop bets. It fetches live
 - `nba_helpers_tier1.py`: Quick PRA helper that pulls a single season of games, supports filters (home/away, last N, min minutes), offers empirical and normal-approx probabilities, and returns edge/EV/fair odds.
 - `nba_helpers_tier2.py`: Minutes-aware, multi-season model. Builds recency weights, fits weighted linear regression of stat ~ minutes, applies an optional opponent mean multiplier, and computes win prob, edge, fair odds, and EV for points/rebounds/assists/threes/PRA.
 - `nba_eda.ipynb`: Small notebook that demos `nba_api` queries and both helper modules (Jokić/Sarr/Westbrook examples).
-- `requirements.txt`: Minimal deps (`streamlit`, `pandas`, `numpy`, `nba_api`).
+- `requirements.txt`: Deps for the app plus the prop-betting pipeline.
 - `Dockerfile`: Streamlit container (Python 3.11 slim). Installs deps and runs `streamlit run app.py` on port 8501.
 - `html/index.html` + `html/Dockerfile`: Tiny static "it works" page served by nginx (handy for Tailscale checks).
 - `scripts/prefetch.py`: CLI to prefetch rosters and multi-season game logs to CSVs under `data/`.
 - `data/`: Cache output from the prefetch script (`rosters_<season>.csv`, `game_logs_<season>.csv`, `metadata.json`).
+- `PRD_PROP_BETTING.md`: Product requirements for a prop-betting pipeline (minutes distribution, stat models, devig, backtesting).
+- `PROP_SYSTEM_USAGE.md`: How to run the new prop-betting pipeline scripts under `scripts/`.
 
 ## How the app works (`app.py`)
 1) Sidebar picks team + season + min avg minutes for the roster table. NBA data is fetched through `nba_api` endpoints (`teams`, `commonteamroster`, `playergamelog`).

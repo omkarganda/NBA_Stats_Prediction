@@ -1,0 +1,467 @@
+<query>
+So instead of writing a function where you can just test for a single player why don't you write a script like an automation script when I run the script it automatically picks up all the games for today and picks up all the players that are going to be playing for today's games and project the stats for each player for those games that are gonna be played today and save those predictions to a CSV file where I can see them Please do this
+</query>
+
+<answer>
+Nice, this is exactly the kind of automation this model is made for. Let’s treat this as a **“daily projections”** script:
+
+* Get today’s schedule
+* For every game, get both teams
+* For each team, get players who’ve actually played for them this season
+* Build feature rows for “tonight’s game” using their latest history
+* Run the trained XGBoost models
+* Save **all player projections for all games today** into a CSV
+
+I’ll assume:
+
+* You used the earlier `train_xgb_player_models.py` scaffold.
+* You saved:
+
+  * `minutes_model.joblib`
+  * `stat_model_pts.joblib`, `stat_model_reb.joblib`, `stat_model_ast.joblib`, `stat_model_fg3m.joblib`, `stat_model_pra.joblib`
+
+If not, I’ll show you the small save snippet first, then the full **projection script**.
+
+---
+
+## 1️⃣ (If needed) Save your trained models from the training script
+
+In `train_xgb_player_models.py`, after training, add:
+
+```python
+from joblib import dump
+
+# after minutes_model is trained
+dump(minutes_model, "minutes_model.joblib")
+
+# after stat_models dict is built
+for stat, model in stat_models.items():
+    dump(model, f"stat_model_{stat.lower()}.joblib")
+
+# also save the feature table (for schema + team context)
+df_feat.to_pickle("df_feat.pkl")
+```
+
+Run the training script once so these files exist in the same folder:
+
+* `minutes_model.joblib`
+* `stat_model_pts.joblib`
+* `stat_model_reb.joblib`
+* `stat_model_ast.joblib`
+* `stat_model_fg3m.joblib`
+* `stat_model_pra.joblib`
+* `df_feat.pkl`
+
+---
+
+## 2️⃣ New script: `project_today_all_players.py`
+
+This script:
+
+* Reuses the **same feature pipeline** you trained with
+* Uses NBA’s **ScoreboardV2** to get today’s games
+* Picks players who’ve played **at least N games this season** for each team
+* Projects **minutes + PTS/REB/AST/3PM/PRA**
+* Saves everything to `player_projections_today.csv`
+
+```python
+"""
+project_today_all_players.py
+
+Usage:
+    python project_today_all_players.py
+
+What it does:
+    - Loads trained XGBoost minutes + stat models
+    - Loads the historical feature table (df_feat.pkl)
+    - Uses NBA ScoreboardV2 to get today's games
+    - For every team in those games, finds players who have actually
+      played for that team this season
+    - For each (player, game) builds a "future" feature row based on
+      latest history + team/opponent context
+    - Runs models to predict:
+        * minutes
+        * PTS, REB, AST, FG3M, PRA
+    - Writes all projections to player_projections_today.csv
+
+NOTE:
+    - This doesn't know about injuries/lineup scratches — it assumes
+      any player who has played enough games for that team this season
+      could play today. You can later filter based on injury reports.
+"""
+
+from datetime import datetime
+from typing import Dict, List
+
+import numpy as np
+import pandas as pd
+
+from joblib import load
+from nba_api.stats.endpoints import scoreboardv2
+from nba_api.stats.static import teams
+
+# Import utilities and constants from your training script
+from train_xgb_player_models import (
+    SEASONS,
+    SEASON_TYPE,
+    TARGET_STATS,
+    get_minutes_feature_cols,
+    get_stat_feature_cols,
+)
+
+
+# -------------------------
+# 1. Helpers
+# -------------------------
+
+def get_today_string_for_scoreboard() -> str:
+    """
+    ScoreboardV2 expects 'MM/DD/YYYY'.
+    """
+    today = datetime.today()
+    return today.strftime("%m/%d/%Y")
+
+
+def get_today_games() -> pd.DataFrame:
+    """
+    Use ScoreboardV2 to get today's games.
+    Returns game_header DataFrame (one row per game).
+    """
+    game_date_str = get_today_string_for_scoreboard()
+    sb = scoreboardv2.ScoreboardV2(game_date=game_date_str)
+    game_header = sb.game_header.get_data_frame()
+    return game_header
+
+
+def build_team_id_map() -> Dict[int, str]:
+    """
+    Map TEAM_ID -> TEAM_ABBREVIATION using static teams list.
+    """
+    all_teams = teams.get_teams()
+    id_to_abbr = {t["id"]: t["abbreviation"] for t in all_teams}
+    return id_to_abbr
+
+
+def get_today_matchups(game_header_df: pd.DataFrame) -> List[Dict[str, str]]:
+    """
+    From Scoreboard game_header, build a list of dicts:
+        { "game_id", "home_abbr", "away_abbr" }
+    """
+    id_to_abbr = build_team_id_map()
+
+    matchups = []
+    for _, row in game_header_df.iterrows():
+        game_id = row["GAME_ID"]
+        home_id = int(row["HOME_TEAM_ID"])
+        away_id = int(row["VISITOR_TEAM_ID"])
+
+        home_abbr = id_to_abbr.get(home_id, None)
+        away_abbr = id_to_abbr.get(away_id, None)
+
+        if home_abbr is None or away_abbr is None:
+            continue
+
+        matchups.append(
+            {
+                "game_id": game_id,
+                "home_abbr": home_abbr,
+                "away_abbr": away_abbr,
+            }
+        )
+    return matchups
+
+
+def build_team_context_from_df_feat(df_feat: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+    """
+    From df_feat, extract most recent TEAM_* rolling stats per team,
+    so we can plug them into future-game rows.
+
+    Returns:
+        team_context[team_abbr] = {
+            "TEAM_PTS_L10": ...,
+            "TEAM_REB_L10": ...,
+            "TEAM_AST_L10": ...,
+            "TEAM_FG3M_L10": ...
+        }
+    """
+    team_cols = ["TEAM_PTS_L10", "TEAM_REB_L10", "TEAM_AST_L10", "TEAM_FG3M_L10"]
+    df_team = (
+        df_feat.dropna(subset=team_cols)
+        .sort_values("GAME_DATE")
+        .groupby("TEAM_ABBREVIATION")
+        .tail(1)
+        .set_index("TEAM_ABBREVIATION")
+    )
+    ctx = {}
+    for team_abbr, row in df_team[team_cols].iterrows():
+        ctx[team_abbr] = row.to_dict()
+    return ctx
+
+
+def get_team_players_for_current_season(
+    df_feat: pd.DataFrame,
+    team_abbr: str,
+    current_season: str,
+    min_games: int = 3,
+) -> pd.DataFrame:
+    """
+    Return DataFrame of players (PLAYER_ID, PLAYER_NAME) who have played
+    at least min_games for this team in current_season.
+    """
+    df_team = df_feat[
+        (df_feat["TEAM_ABBREVIATION"] == team_abbr) & (df_feat["SEASON"] == current_season)
+    ].copy()
+    if df_team.empty:
+        return pd.DataFrame(columns=["PLAYER_ID", "PLAYER_NAME"])
+
+    counts = (
+        df_team.groupby(["PLAYER_ID", "PLAYER_NAME"])["GAME_ID"]
+        .nunique()
+        .reset_index(name="GAMES")
+    )
+    counts = counts[counts["GAMES"] >= min_games]
+    return counts[["PLAYER_ID", "PLAYER_NAME"]]
+
+
+def build_future_row_for_player(
+    df_feat: pd.DataFrame,
+    team_context: Dict[str, Dict[str, float]],
+    player_id: int,
+    player_name: str,
+    team_abbr: str,
+    opp_team_abbr: str,
+    game_date: str,
+    is_home: int,
+) -> pd.DataFrame:
+    """
+    Build a single "future game" feature row for a player, based on their
+    latest row in df_feat (same team), but with:
+        - updated GAME_DATE
+        - updated OPP_TEAM_ABBREVIATION
+        - updated IS_HOME
+        - updated DAYS_SINCE_PRIOR / IS_B2B
+        - updated TEAM_* and OPP_TEAM_* rolled features from team_context
+    """
+    df_p = df_feat[
+        (df_feat["PLAYER_ID"] == player_id) & (df_feat["TEAM_ABBREVIATION"] == team_abbr)
+    ].copy()
+    if df_p.empty:
+        # fallback: any row for the player
+        df_p = df_feat[df_feat["PLAYER_ID"] == player_id].copy()
+        if df_p.empty:
+            raise ValueError(f"No rows for player_id={player_id}, name={player_name}")
+
+    last_row = df_p.sort_values("GAME_DATE").iloc[-1].copy()
+
+    target_date = pd.to_datetime(game_date).date()
+    last_date = last_row["GAME_DATE"].date()
+    days_since_prior = (target_date - last_date).days
+
+    last_row["GAME_DATE"] = pd.to_datetime(game_date)
+    last_row["TEAM_ABBREVIATION"] = team_abbr
+    last_row["OPP_TEAM_ABBREVIATION"] = opp_team_abbr
+    last_row["IS_HOME"] = is_home
+    last_row["DAYS_SINCE_PRIOR"] = days_since_prior
+    last_row["IS_B2B"] = int(days_since_prior == 1)
+
+    # Update team context features if we have them
+    team_cols = ["TEAM_PTS_L10", "TEAM_REB_L10", "TEAM_AST_L10", "TEAM_FG3M_L10"]
+    opp_cols = ["OPP_TEAM_PTS_L10", "OPP_TEAM_REB_L10", "OPP_TEAM_AST_L10", "OPP_TEAM_FG3M_L10"]
+
+    if team_abbr in team_context:
+        for col in team_cols:
+            if col in last_row.index:
+                last_row[col] = team_context[team_abbr].get(col, last_row[col])
+
+    if opp_team_abbr in team_context:
+        for tcol, ocol in zip(team_cols, opp_cols):
+            if ocol in last_row.index:
+                last_row[ocol] = team_context[opp_team_abbr].get(tcol, last_row[ocol])
+
+    row_df = pd.DataFrame([last_row])
+    return row_df
+
+
+# -------------------------
+# 2. Main projection logic
+# -------------------------
+
+def main():
+    # 1. Load models and feature table
+    print("Loading trained models and feature table...")
+    minutes_model = load("minutes_model.joblib")
+    stat_models = {
+        "PTS": load("stat_model_pts.joblib"),
+        "REB": load("stat_model_reb.joblib"),
+        "AST": load("stat_model_ast.joblib"),
+        "FG3M": load("stat_model_fg3m.joblib"),
+        "PRA": load("stat_model_pra.joblib"),
+    }
+    df_feat: pd.DataFrame = pd.read_pickle("df_feat.pkl")
+
+    current_season = SEASONS[-1]
+
+    # 2. Get today's games
+    print("Fetching today's games from ScoreboardV2...")
+    game_header = get_today_games()
+    matchups = get_today_matchups(game_header)
+
+    if not matchups:
+        print("No games found for today.")
+        return
+
+    print("Today's matchups:")
+    for m in matchups:
+        print(f"GAME_ID {m['game_id']}: {m['away_abbr']} @ {m['home_abbr']}")
+
+    # 3. Build team context (rolling team stats)
+    print("Building team context from df_feat...")
+    team_context = build_team_context_from_df_feat(df_feat)
+
+    # 4. Get feature column lists (must match training)
+    minutes_features = get_minutes_feature_cols(df_feat)
+    stat_features = get_stat_feature_cols(df_feat)
+
+    # 5. Build projections for all players in all games
+    today_iso = datetime.today().strftime("%Y-%m-%d")
+    rows = []
+
+    for matchup in matchups:
+        game_id = matchup["game_id"]
+        home_abbr = matchup["home_abbr"]
+        away_abbr = matchup["away_abbr"]
+
+        # Home team players
+        home_players = get_team_players_for_current_season(
+            df_feat, home_abbr, current_season, min_games=3
+        )
+        # Away team players
+        away_players = get_team_players_for_current_season(
+            df_feat, away_abbr, current_season, min_games=3
+        )
+
+        print(
+            f"\nGAME_ID {game_id}: projecting players for "
+            f"{away_abbr} @ {home_abbr} "
+            f"(home players={len(home_players)}, away players={len(away_players)})"
+        )
+
+        # Helper to project for all players on a team
+        def _project_team_players(players_df, team_abbr, opp_abbr, is_home_flag):
+            for _, p in players_df.iterrows():
+                pid = int(p["PLAYER_ID"])
+                pname = p["PLAYER_NAME"]
+
+                try:
+                    future_row = build_future_row_for_player(
+                        df_feat=df_feat,
+                        team_context=team_context,
+                        player_id=pid,
+                        player_name=pname,
+                        team_abbr=team_abbr,
+                        opp_team_abbr=opp_abbr,
+                        game_date=today_iso,
+                        is_home=is_home_flag,
+                    )
+                except Exception as e:
+                    print(f"Skipping {pname} ({team_abbr}) due to error: {e}")
+                    continue
+
+                # Predict minutes
+                mins_pred = float(
+                    minutes_model.predict(future_row[minutes_features].values)[0]
+                )
+
+                # Predict stats
+                stat_preds = {}
+                for stat in TARGET_STATS:
+                    model = stat_models[stat]
+                    pred = float(model.predict(future_row[stat_features].values)[0])
+                    stat_preds[stat.lower()] = pred
+
+                rows.append(
+                    {
+                        "game_id": game_id,
+                        "game_date": today_iso,
+                        "team": team_abbr,
+                        "opponent": opp_abbr,
+                        "is_home": is_home_flag,
+                        "player_id": pid,
+                        "player_name": pname,
+                        "minutes_pred": mins_pred,
+                        **stat_preds,
+                    }
+                )
+
+        _project_team_players(home_players, home_abbr, away_abbr, is_home_flag=1)
+        _project_team_players(away_players, away_abbr, home_abbr, is_home_flag=0)
+
+    # 6. Save to CSV
+    if not rows:
+        print("No player projections generated (no eligible players).")
+        return
+
+    df_proj = pd.DataFrame(rows)
+    out_path = "player_projections_today.csv"
+    df_proj.to_csv(out_path, index=False)
+    print(f"\nSaved {len(df_proj)} player projections to {out_path}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+---
+
+## 3️⃣ What this script is doing (and its limitations)
+
+When you run:
+
+```bash
+python project_today_all_players.py
+```
+
+It will:
+
+1. Load your trained XGBoost models + `df_feat.pkl`.
+2. Hit NBA’s ScoreboardV2 for **today’s date**.
+3. For each game:
+
+   * Identify home and away teams (via TEAM_ID → abbreviation).
+   * For each team, select players who’ve played at least 3 games this season for that team.
+4. For each eligible player:
+
+   * Build a “future” feature row using their **latest history**.
+   * Update:
+
+     * `GAME_DATE` = today
+     * `TEAM_ABBREVIATION` / `OPP_TEAM_ABBREVIATION`
+     * `IS_HOME`, `DAYS_SINCE_PRIOR`, `IS_B2B`
+     * `TEAM_*` and `OPP_TEAM_*` from the latest team context.
+   * Run:
+
+     * minutes_model → `minutes_pred`
+     * stat_models → `pts`, `reb`, `ast`, `fg3m`, `pra` predictions.
+5. Dump everything into `player_projections_today.csv` with columns like:
+
+```text
+game_id, game_date, team, opponent, is_home,
+player_id, player_name,
+minutes_pred, pts, reb, ast, fg3m, pra
+```
+
+**Limitations (so you’re not surprised):**
+
+* It doesn’t know about **injuries**, **rest days**, **starting lineup changes**, etc.
+  It just uses “players who have already played a few games for this team”.
+* Team & opponent context for the future game is derived from **latest available rolling stats** — it doesn’t recompute pace/ratings explicitly but instead uses the rolling team stats we engineered.
+* The stat models (in our scaffold) don’t yet use **predicted minutes** as a feature; they rely on historical minutes & rates. That’s still useful but you can later tighten the loop by retraining with predicted minutes as an input.
+
+---
+
+If you want, next step we can:
+
+* Tighten the training/inference loop so **stat models explicitly depend on predicted minutes**, or
+* Add a quick script to filter `player_projections_today.csv` for **just the games/props you’re betting** and compare against book lines.
+
+</answer>

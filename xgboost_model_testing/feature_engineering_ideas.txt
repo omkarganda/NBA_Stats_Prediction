@@ -1,0 +1,392 @@
+You’re thinking about this exactly the way a real projection system designer would. Let’s treat this like we’re writing the “spec doc” for v1 of a serious model.
+
+I’ll do two things:
+
+1. Propose a **concrete feature set** for a league-wide *player–game* table.
+2. Propose **model configurations** (one with XGBoost/LightGBM, one with a neural net) that can actually use those features.
+
+I’ll annotate which parts we’ve *already* kind of done in our linear toy model, and which parts are new.
+
+---
+
+## 1. Targets: what we’re predicting
+
+For each player–game:
+
+* `MIN` – minutes played
+* `PTS` – points
+* `REB` – rebounds
+* `AST` – assists
+* `FG3M` – 3-pointers made
+* `PRA` – PTS + REB + AST
+
+Pipeline structure:
+
+* **Minutes model**: predict `MIN`.
+* **Stats models**: predict `PTS`, `REB`, `AST`, `FG3M`, `PRA` (multi-task).
+
+In practice you’ll use **predicted MIN** as an input to the stat models at inference time.
+
+---
+
+## 2. Feature schema – one row = one player–game
+
+### 2.1 Core identifiers (for embeddings / categories, not as raw numbers)
+
+* `player_id`
+* `team_id`
+* `opp_team_id`
+* `position` (one of {G, W, F, C} or more granular if you want)
+
+**Usage:**
+
+* In tree models: treat as categorical (if supported) or one-hot / target encode.
+* In NN: use **learned embeddings** per `player_id`, `team_id`, `opp_team_id`, `position`.
+
+---
+
+### 2.2 Player form & role (time-respecting, all computed **before** game)
+
+Compute these with rolling windows and `shift(1)` so they only see past games.
+
+**Minutes & rolling averages**
+
+* `MIN_L3`, `MIN_L5`, `MIN_L10` – rolling means
+* `MIN_STD_L5` – std dev of minutes in last 5
+
+**Per-game box stats (raw)**
+
+* `PTS_L5`, `REB_L5`, `AST_L5`, `FG3M_L5` – rolling means
+* `PTS_L10`, `REB_L10`, … (optional)
+* `PTS_STD_L5`, `REB_STD_L5`, `AST_STD_L5`, `FG3M_STD_L5` – volatility
+
+**Rate stats (per-minute)**
+
+* `PTS_PER_MIN_L5`, `REB_PER_MIN_L5`, `AST_PER_MIN_L5`, `FG3M_PER_MIN_L5`
+* Optionally same for L10.
+
+**Usage & on-ball role proxies**
+
+These depend on what you can pull from the API:
+
+* `FGA_L5`, `FGA_PER_MIN_L5`
+* `FTA_L5`, `FTA_PER_MIN_L5`
+* `USG_L5` if you compute usage (possessions used / team possessions)
+* `AST_SHARE_L5` – player AST / team AST (rolling)
+
+**Role flags**
+
+* `IS_STARTER_RECENT` – 1 if started (or played ≥ 30 min) in at least X of last 5 games
+* `BENCH_SCORER_FLAG` – 1 if high PTS_PER_MIN but low MIN_L5
+* `ROLE_STABILITY_L5` – e.g., std dev of minutes; low = stable role
+
+> What we’ve already done: only a very primitive version (MIN_L5 and basic rolling stats) in the linear toy.
+> What’s new: more windows, stddevs, rates, and explicit role flags.
+
+---
+
+### 2.3 Team offensive context (player’s team, up to that date)
+
+Aggregate team-level stats **excluding** today’s game.
+
+For `team_id`:
+
+* `TEAM_OFF_RTG_L10` – offensive rating (points/100 possessions) last 10 games
+* `TEAM_OFF_RTG_SEASON_TO_DATE`
+* `TEAM_PACE_L10` – possessions per 48
+* `TEAM_3P_RATE_L10` – 3PA / FGA
+* `TEAM_3P_PCT_L10`
+* `TEAM_TOV_RATE_L10` – turnovers per possession
+* `TEAM_ORB_RATE_L10` – offensive rebound rate
+
+Optional, player share of team stats:
+
+* `PLAYER_PTS_SHARE_L10` – player PTS / team PTS
+* `PLAYER_AST_SHARE_L10`
+* `PLAYER_REB_SHARE_L10`
+
+These help the model understand how much of the offense this guy “owns”.
+
+---
+
+### 2.4 Opponent defensive context (opp team at that time)
+
+For `opp_team_id`:
+
+* `OPP_DEF_RTG_L10`, `OPP_DEF_RTG_SEASON_TO_DATE`
+* `OPP_PACE_L10` – useful for possessions environment
+* `OPP_DRB_RATE_L10` – defensive rebound rate
+
+**Allowed stats by position** (approximate by your position buckets):
+
+* `OPP_PTS_ALLOWED_TO_POS_L10`
+* `OPP_REB_ALLOWED_TO_POS_L10`
+* `OPP_AST_ALLOWED_TO_POS_L10`
+* `OPP_FG3M_ALLOWED_TO_POS_L10`
+
+Even rougher version: allowed per starter vs per bench if you can’t get positional mapping perfect.
+
+**Style flags (optional if you engineer them)**
+
+* `OPP_RUNS_BIG_DROP_FLAG` – if their rim protectors rarely switch (affects guards vs bigs differently)
+* `OPP_SWITCH_HEAVY_FLAG` – from synergy-style data; may be overkill unless you have tracking data.
+
+> What we’ve already done: none of this is in the current code yet – our models are still opponent-agnostic.
+> This section is the big upgrade.
+
+---
+
+### 2.5 Game context & schedule
+
+**Game context**
+
+* `IS_HOME` – 1 if home, 0 if away
+* `IS_PLAYOFF`
+* `GAME_IN_SERIES` – if playoff series, game number (1–7)
+
+**Schedule fatigue**
+
+* `DAYS_SINCE_PRIOR` – we already compute this
+* `IS_B2B` – 1 if played yesterday
+* `IS_3IN4`, `IS_4IN6` – flags for dense schedule patches
+
+**Betting market features (if available)**
+
+These are incredibly informative:
+
+* `GAME_TOTAL` – closing total (implied possessions x efficiency)
+* `SPREAD` – team’s spread (negative if favored)
+* `TEAM_IMPLIED_TOTAL` – implied points for team (from spread + total)
+* You can derive `WIN_PROB` from spread or moneyline, if you want.
+
+---
+
+### 2.6 Regime & recency flags (role/team changes)
+
+To handle new teams / new roles / players who moved:
+
+* `IS_CURRENT_TEAM` – 1 if `team_id` = current team
+* `IS_NEW_TEAM_SEASON` – 1 if first season with this team
+* `GAMES_WITH_CURRENT_TEAM` – count
+* `GAMES_SINCE_ROLE_CHANGE` – from when minutes jumped/dropped (you can define heuristic: e.g., first game where MIN_L5 crossed 30)
+
+For recency weighting during training:
+
+* `RECENCY_WEIGHT` – e.g., exponential based on game index or days (like we did in Tier-2).
+
+These features help the model learn that 35-minute nights as a starter **this year on this team** matter more than 18-minute bench games on a different team two years ago.
+
+---
+
+### 2.7 Labels we’ll model
+
+Per row:
+
+* `MIN`
+* `PTS`, `REB`, `AST`, `FG3M`, `PRA`
+
+You’ll train **separate models or heads** for these targets.
+
+---
+
+## 3. Model configuration – XGBoost / LightGBM baseline
+
+### 3.1 Overall strategy
+
+* Use **all players, all games, all teams** from last N seasons (say 2–3).
+* Respect time in splitting: train on seasons up to year N−1, validate on early season N, test on later months, etc.
+* Use **recency weights** so recent seasons count more (like a sample weight passed to the model).
+
+We’ll follow the **two-stage** structure:
+
+1. Minutes model: `MIN`
+2. Stat models: `PTS`, `REB`, `AST`, `FG3M`, `PRA`
+
+---
+
+### 3.2 Minutes model (XGBoost / LightGBM)
+
+**Target:** `MIN`
+
+**Inputs (subset of features):**
+
+* Player form & role:
+
+  * `MIN_L5`, `MIN_L10`, `MIN_STD_L5`
+  * `IS_STARTER_RECENT`, `ROLE_STABILITY_L5`
+* Game & schedule:
+
+  * `IS_HOME`, `DAYS_SINCE_PRIOR`, `IS_B2B`, `IS_3IN4`
+* Team context:
+
+  * `TEAM_PACE_L10`, `TEAM_OFF_RTG_L10`
+* Regime:
+
+  * `IS_CURRENT_TEAM`, `GAMES_WITH_CURRENT_TEAM`
+* Identifiers (optionally as categoricals): `player_id`, `team_id`
+
+**Model config (XGBoost example):**
+
+```text
+objective:        "reg:squarederror"
+eval_metric:      "rmse"
+max_depth:        5 or 6
+learning_rate:    0.03–0.07
+n_estimators:     400–800
+min_child_weight: 5–20
+subsample:        0.8
+colsample_bytree: 0.8
+reg_lambda:       1.0
+tree_method:      "hist"
+```
+
+**Training details:**
+
+* Use **sample weights = RECENCY_WEIGHT** so newer games have more impact.
+* Check calibration: predicted minutes vs actual minutes by decile.
+
+---
+
+### 3.3 Stat models (points, rebounds, assists, threes, PRA)
+
+You have two options:
+
+#### Option A – One XGB model per stat (simpler)
+
+For each target (`PTS`, `REB`, `AST`, `FG3M`, `PRA`):
+
+* **Target:** the stat value (you can optionally use `log1p(stat)` to stabilize skew).
+* **Inputs:**
+
+  * All features in 2.2–2.6, plus:
+
+    * Either `MIN` during training,
+    * Or **predicted minutes** from the minutes model (for more realistic end-to-end behavior).
+* **Model config:** similar to minutes model, but you might bump depth slightly (6–8).
+
+```text
+objective:        "reg:squarederror"
+eval_metric:      "rmse"
+max_depth:        6–8
+learning_rate:    0.03–0.07
+n_estimators:     500–1000
+min_child_weight: 5–20
+subsample:        0.8
+colsample_bytree: 0.8
+reg_alpha:        0–1.0
+reg_lambda:       1.0–3.0
+```
+
+* Again, use **RECENCY_WEIGHT** as sample weight.
+* You can also give **slightly higher weight** to games from current team / current role regime.
+
+#### Option B – Multi-output model (tree or NN)
+
+* Some libs (like CatBoost) support multi-target reg; or you can move to NN here.
+* Pros: can learn shared structure (e.g., minutes & usage affecting points and assists similarly).
+* If starting out, I’d do Option A first for clarity, then merge.
+
+---
+
+## 4. Neural network configuration (PyTorch-style idea)
+
+If you want a neural net that consumes this same feature schema:
+
+### 4.1 Inputs
+
+* **Numeric features**: everything continuous:
+
+  * All rolling stats, rates, team/opponent metrics, schedule, Vegas, etc.
+* **Categorical features:**
+
+  * `player_id`, `team_id`, `opp_team_id`, `position`
+
+You’ll:
+
+* Normalize numeric features (mean 0, std 1).
+* Create embeddings for each categorical:
+
+  ```text
+  player_id:    embedding_dim ~ 16–32
+  team_id:      embedding_dim ~ 8
+  opp_team_id:  embedding_dim ~ 8
+  position:     embedding_dim ~ 4
+  ```
+
+Concatenate: `[numeric_features || player_emb || team_emb || opp_emb || pos_emb]`.
+
+---
+
+### 4.2 Network architecture (multi-task)
+
+Example:
+
+* Input dimension: ~K (depends on how many numeric features you use)
+
+* Hidden layers:
+
+  ```text
+  Dense 256 -> ReLU -> Dropout(0.1)
+  Dense 256 -> ReLU -> Dropout(0.1)
+  Dense 128 -> ReLU -> Dropout(0.1)
+  ```
+
+* Then split into **heads**:
+
+  ```text
+  head_minutes: Dense 64 -> ReLU -> Dense 1
+  head_pts:     Dense 64 -> ReLU -> Dense 1
+  head_reb:     Dense 64 -> ReLU -> Dense 1
+  head_ast:     Dense 64 -> ReLU -> Dense 1
+  head_3pm:     Dense 64 -> ReLU -> Dense 1
+  head_pra:     Dense 64 -> ReLU -> Dense 1
+  ```
+
+* Loss function:
+
+  ```text
+  L = w_min * MSE(MIN_pred, MIN_true)
+    + w_pts * MSE(PTS_pred, PTS_true)
+    + w_reb * MSE(REB_pred, REB_true)
+    + ...
+  ```
+
+  with weights `w_*` chosen so each loss contributes similarly (or focus more on the stats you actually bet).
+
+* Optional: use `log1p` targets and train in that space.
+
+* Training:
+
+  * Time-aware train/val/test splits.
+  * Batch size ~512–2048.
+  * Optimizer: Adam with lr ~1e-3 to 3e-4.
+  * Early stopping on validation RMSE / MAE for key stats.
+
+---
+
+## 5. How this ties back to the problem we’re solving
+
+Putting it all together for a specific game (e.g. DEN vs HOU tonight):
+
+1. For each **active player**, build the feature vector:
+
+   * Based on their historical games (rolling windows),
+   * Current team & opponent metrics (rolling),
+   * Game context (home/away, rest, Vegas).
+2. Use the **minutes model/head** to predict expected minutes.
+3. Use the **stat models/heads** to predict:
+
+   * PTS, REB, AST, 3PM, PRA (means; later you can model variance).
+4. (Optional) Reconcile with a separate **team total model** so the sum of player points ≈ team implied totals.
+
+Compared to the linear toy we built:
+
+* We’ve moved from a single player-only, minutes-only view
+  → to a **league-wide, context-rich, nonlinear** model design.
+
+---
+
+If you’d like next, I can:
+
+* Take this feature spec and write a **concrete training scaffold** (e.g., pseudo-code or actual Python skeleton) for the XGBoost version, or
+* Start with a minimal subset of these features and build up step by step so you can actually run it without drowning in engineering.

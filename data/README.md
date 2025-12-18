@@ -8,6 +8,9 @@ Files produced:
 Cron-friendly command (12am Eastern / 05:00 UTC):
 - `0 5 * * * cd /home/banana-bread/nba_stats_prediction && /usr/bin/env python3 scripts/prefetch.py --seasons 2024-25,2025-26 >> logs/prefetch.log 2>&1`
 
+Resumable ingest (parquet) with retries via cron:
+- `0 5 * * * cd /home/banana-bread/nba_stats_prediction && bash scripts/cron_ingest.sh`
+
 Notes:
 - Adjust `--seasons` as the calendar rolls; set `--roster-season` if you want rosters from a different year than the game logs.
 - Add a short sleep (default 0.6s) to reduce nba_api rate-limit risk; increase if you see warnings.
